@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject var scanner: PluginScanner
@@ -9,7 +10,7 @@ struct ContentView: View {
     @State private var searchText = ""
     @State private var showingRemovalDialog = false
     @State private var removalOption: RemovalOption = .trash
-    @State private var showingBackupSheet = false
+    @State private var showingExportDialog = false
 
     var filteredPlugins: [Plugin] {
         let result = scanner.plugins.filter { plugin in
@@ -31,7 +32,6 @@ struct ContentView: View {
                 pluginCount: filteredPlugins.count,
                 selectedCount: selectedPlugins.count,
                 isScanning: scanner.isScanning,
-                onScan: { scanner.scanForPlugins() },
                 onRefresh: { scanner.refreshScan() }
             )
 
@@ -53,31 +53,45 @@ struct ContentView: View {
                     }
                     .tag(1)
 
-                BackupView(
-                    plugins: scanner.plugins,
-                    selectedPlugins: selectedPlugins
-                )
-                .tabItem {
-                    Label("Backup", systemImage: "arrow.down.doc")
-                }
+                BackupView(plugins: scanner.plugins)
+                    .tabItem {
+                        Label("Backup", systemImage: "arrow.down.doc")
+                    }
                     .tag(2)
             }
 
-            // Footer
-            FooterView(
-                selectedCount: selectedPlugins.count,
-                onRemove: {
-                    showingRemovalDialog = true
-                },
-                onBackup: {
-                    showingBackupSheet = true
-                }
-            )
-            .disabled(selectedPlugins.isEmpty || manager.isProcessing)
+            // Footer - conditionally show based on tab
+            if selectedTab == 0 {
+                // All Plugins tab - show Export footer
+                ExportFooterView(
+                    onExport: {
+                        showingExportDialog = true
+                    }
+                )
+            } else if selectedTab == 1 {
+                // Multi-Format tab - show Remove footer
+                FooterView(
+                    selectedCount: selectedPlugins.count,
+                    onRemove: {
+                        showingRemovalDialog = true
+                    }
+                )
+                .disabled(selectedPlugins.isEmpty || manager.isProcessing)
+            }
         }
         .frame(minWidth: 900, minHeight: 600)
-        .sheet(isPresented: $showingBackupSheet) {
-            BackupSheetView(plugins: selectedPlugins)
+        .fileExporter(
+            isPresented: $showingExportDialog,
+            document: ExportDocument(plugins: scanner.plugins),
+            contentType: .plainText,
+            defaultFilename: "plugins_manifest_\(getCurrentTimestamp())"
+        ) { result in
+            switch result {
+            case .success(let url):
+                print("Exported to: \(url.path)")
+            case .failure(let error):
+                print("Export failed: \(error)")
+            }
         }
         .alert("Remove Plugins", isPresented: $showingRemovalDialog) {
             Button("Cancel", role: .cancel) { }
@@ -107,13 +121,18 @@ struct ContentView: View {
             }
         }
     }
+
+    private func getCurrentTimestamp() -> String {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd_HHmmss"
+        return dateFormatter.string(from: Date())
+    }
 }
 
 struct HeaderView: View {
     let pluginCount: Int
     let selectedCount: Int
     let isScanning: Bool
-    let onScan: () -> Void
     let onRefresh: () -> Void
 
     var body: some View {
@@ -131,17 +150,10 @@ struct HeaderView: View {
                     .foregroundColor(.secondary)
             }
 
-            HStack(spacing: 12) {
-                Button(action: onScan) {
-                    Label("Scan", systemImage: "magnifyingglass")
-                }
-                .disabled(isScanning)
-
-                Button(action: onRefresh) {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .disabled(isScanning)
+            Button(action: onRefresh) {
+                Label("Refresh", systemImage: "arrow.clockwise")
             }
+            .disabled(isScanning)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
@@ -152,7 +164,6 @@ struct HeaderView: View {
 struct FooterView: View {
     let selectedCount: Int
     let onRemove: () -> Void
-    let onBackup: () -> Void
 
     var body: some View {
         HStack {
@@ -162,16 +173,10 @@ struct FooterView: View {
 
             Spacer()
 
-            HStack(spacing: 12) {
-                Button(action: onBackup) {
-                    Label("Backup Selected", systemImage: "arrow.down.doc")
-                }
-
-                Button(action: onRemove) {
-                    Label("Remove Selected", systemImage: "trash")
-                }
-                .buttonStyle(.borderedProminent)
+            Button(action: onRemove) {
+                Label("Remove Selected", systemImage: "trash")
             }
+            .buttonStyle(.borderedProminent)
             .disabled(selectedCount == 0)
         }
         .padding(.horizontal, 20)
@@ -203,6 +208,104 @@ struct ProcessOverlay: View {
                 .shadow(radius: 20)
             }
         }
+    }
+}
+
+struct ExportFooterView: View {
+    let onExport: () -> Void
+
+    var body: some View {
+        HStack {
+            Text("Export plugin list to a text file")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Spacer()
+
+            Button(action: onExport) {
+                Label("Export List", systemImage: "arrow.down.doc")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+}
+
+struct ExportDocument: FileDocument {
+    let plugins: [Plugin]
+
+    static var readableContentTypes: [UTType] { [.plainText] }
+
+    init(plugins: [Plugin]) {
+        self.plugins = plugins
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        self.plugins = []
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        let content = generateManifestContent()
+        let data = content.data(using: .utf8)!
+        return FileWrapper(regularFileWithContents: data)
+    }
+
+    private func generateManifestContent() -> String {
+        var content = """
+        Audio Plugin Manifest
+        Generated: \(Date())
+        ================================
+
+        Total Plugins: \(plugins.count)
+
+        """
+
+        // Group by format
+        let grouped = Dictionary(grouping: plugins) { plugin -> PluginFormat in
+            // For multi-format plugins, use the first format
+            plugin.formats.sorted(by: { $0.rawValue < $1.rawValue }).first ?? .vst3
+        }
+
+        let sortedFormats = grouped.keys.sorted { $0.rawValue < $1.rawValue }
+
+        for format in sortedFormats {
+            if let formatPlugins = grouped[format], !formatPlugins.isEmpty {
+                content += "\n\(format.rawValue.uppercased()) PLUGINS (\(formatPlugins.count))\n"
+                content += String(repeating: "=", count: 50) + "\n\n"
+
+                let sortedPlugins = formatPlugins.sorted { $0.name < $1.name }
+
+                for plugin in sortedPlugins {
+                    content += "  • \(plugin.name)\n"
+
+                    if let manufacturer = plugin.manufacturer {
+                        content += "    Manufacturer: \(manufacturer)\n"
+                    }
+
+                    if let version = plugin.version {
+                        content += "    Version: \(version)\n"
+                    }
+
+                    content += "    Size: \(plugin.formattedSize)\n"
+                    content += "    Formats: \(plugin.formatList)\n"
+
+                    if plugin.paths.count == 1 {
+                        content += "    Location: \(plugin.paths[0].path)\n"
+                    } else {
+                        content += "    Locations (\(plugin.paths.count)):\n"
+                        for (index, path) in plugin.paths.enumerated() {
+                            content += "      \(index + 1). \(path.path)\n"
+                        }
+                    }
+
+                    content += "\n"
+                }
+            }
+        }
+
+        return content
     }
 }
 

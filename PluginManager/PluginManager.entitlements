@@ -8,14 +8,21 @@
     <true/>
     <key>com.apple.security.files.downloads.read-write</key>
     <true/>
+    <key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
+    <array>
+        <string>/Library/Audio/Plug-Ins/</string>
+        <string>/Users/</string>
+    </array>
     <key>com.apple.security.temporary-exception.files.absolute-path.read-write</key>
     <array>
-        <string>/</string>
         <string>/Library/Audio/Plug-Ins/</string>
-        <string>~/Library/Audio/Plug-Ins/</string>
-        <string>/System/Library/Audio/Plug-Ins/</string>
+        <string>/Users/</string>
     </array>
     <key>com.apple.security.automation.apple-events</key>
     <true/>
+    <key>com.apple.security.device.camera</key>
+    <false/>
+    <key>com.apple.security.device.microphone</key>
+    <false/>
 </dict>
 </plist>

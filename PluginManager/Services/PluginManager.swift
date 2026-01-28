@@ -100,6 +100,9 @@ class PluginManager: ObservableObject {
             do {
                 try self.fileManager.createDirectory(at: backupFolder, withIntermediateDirectories: true, attributes: nil)
 
+                // Track backed up plugins for manifest
+                var backedUpPlugins: [PluginFormat: [(name: String, path: String)]] = [:]
+
                 var success = true
                 let totalSteps = plugins.count
                 var currentStep = 0
@@ -111,9 +114,19 @@ class PluginManager: ObservableObject {
                         self.progress = Double(currentStep) / Double(totalSteps)
                     }
 
-                    let backedUp = self.backupPlugin(plugin, to: backupFolder)
-                    if !backedUp {
+                    if let result = self.backupPlugin(plugin, to: backupFolder) {
+                        for (format, name, path) in result {
+                            backedUpPlugins[format, default: []].append((name: name, path: path))
+                        }
+                    } else {
                         success = false
+                    }
+                }
+
+                // Create manifest file
+                if !self.createBackupManifest(backedUpPlugins, at: backupFolder) {
+                    DispatchQueue.main.async {
+                        self.lastError = "Failed to create backup manifest"
                     }
                 }
 
@@ -132,8 +145,9 @@ class PluginManager: ObservableObject {
         }
     }
 
-    private func backupPlugin(_ plugin: Plugin, to destinationURL: URL) -> Bool {
-        var success = true
+    // Returns array of (format, name, path) tuples for each backed up plugin
+    private func backupPlugin(_ plugin: Plugin, to destinationURL: URL) -> [(PluginFormat, String, String)]? {
+        var backedUpFiles: [(PluginFormat, String, String)] = []
 
         for path in plugin.paths {
             do {
@@ -172,18 +186,58 @@ class PluginManager: ObservableObject {
                         counter += 1
                     }
                     try fileManager.copyItem(at: path, to: uniqueDestination)
+                    backedUpFiles.append((format, plugin.name, uniqueDestination.lastPathComponent))
                 } else {
                     try fileManager.copyItem(at: path, to: destination)
+                    backedUpFiles.append((format, plugin.name, destination.lastPathComponent))
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
                     self?.lastError = "Failed to backup \(plugin.name): \(error.localizedDescription)"
                 }
-                success = false
+                return nil
             }
         }
 
-        return success
+        return backedUpFiles.isEmpty ? nil : backedUpFiles
+    }
+
+    private func createBackupManifest(_ backedUpPlugins: [PluginFormat: [(name: String, path: String)]], at backupFolder: URL) -> Bool {
+        let manifestPath = backupFolder.appendingPathComponent("manifest.txt")
+
+        var content = """
+        Audio Plugin Backup Manifest
+        Generated: \(Date())
+        ================================
+
+        """
+
+        // Sort by format name
+        let sortedFormats = backedUpPlugins.keys.sorted { $0.rawValue < $1.rawValue }
+
+        for format in sortedFormats {
+            if let plugins = backedUpPlugins[format], !plugins.isEmpty {
+                content += "\n\(format.rawValue.uppercased()) PLUGINS (\(plugins.count) files)\n"
+                content += String(repeating: "=", count: 50) + "\n\n"
+
+                // Sort plugins alphabetically by name
+                let sortedPlugins = plugins.sorted { $0.name < $1.name }
+
+                for plugin in sortedPlugins {
+                    content += "  • \(plugin.name)\n"
+                    content += "    File: \(plugin.path)\n"
+                }
+                content += "\n"
+            }
+        }
+
+        do {
+            try content.write(to: manifestPath, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            print("Failed to write manifest: \(error)")
+            return false
+        }
     }
 
     // MARK: - Size Calculation

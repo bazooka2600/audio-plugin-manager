@@ -7,36 +7,18 @@ struct PluginListView: View {
     @Binding var selectedFormat: PluginFormat?
     @Binding var searchText: String
 
-    @State private var sortOption: SortOption = .name
-    @State private var sortAscending = true
-
-    enum SortOption: String, CaseIterable {
-        case name = "Name"
-        case size = "Size"
-        case formats = "Formats"
-    }
-
-    var sortedPlugins: [Plugin] {
-        let sorted = plugins.sorted { p1, p2 in
-            switch sortOption {
-            case .name:
-                return sortAscending ? p1.name < p2.name : p1.name > p2.name
-            case .size:
-                return sortAscending ? p1.totalSize < p2.totalSize : p1.totalSize > p2.totalSize
-            case .formats:
-                return sortAscending ? p1.formats.count < p2.formats.count : p1.formats.count > p2.formats.count
-            }
-        }
-        return sorted
-    }
+    @State private var displayPlugins: [Plugin] = []
+    @State private var sortOrder: [KeyPathComparator<Plugin>] = [
+        KeyPathComparator(\Plugin.name, order: .forward)
+    ]
+    @State private var selectedPluginIDs: Set<UUID> = []
+    @State private var showingDetailSheet = false
 
     var body: some View {
         VStack(spacing: 0) {
             // Filter Bar with search
             FilterBar(
                 selectedFormat: $selectedFormat,
-                sortOption: $sortOption,
-                sortAscending: $sortAscending,
                 searchText: $searchText,
                 onSelectAll: selectAllVisible,
                 onDeselectAll: deselectAllVisible
@@ -48,6 +30,18 @@ struct PluginListView: View {
             } else {
                 pluginList
             }
+        }
+        .sheet(isPresented: $showingDetailSheet) {
+            if let selectedID = selectedPluginIDs.first,
+               let plugin = displayPlugins.first(where: { $0.id == selectedID }) {
+                PluginDetailSheet(plugin: plugin)
+            }
+        }
+        .onAppear {
+            displayPlugins = plugins
+        }
+        .onChange(of: plugins) { newValue in
+            displayPlugins = newValue
         }
     }
 
@@ -68,73 +62,58 @@ struct PluginListView: View {
     }
 
     var pluginList: some View {
-        Table(sortedPlugins) {
-            TableColumn("") { plugin in
-                Checkbox(plugin: plugin)
-            }
-            .width(30)
-
-            TableColumn("Name") { plugin in
-                HStack {
-                    Text(plugin.name)
-                        .font(.body)
-                    if plugin.hasMultipleFormats {
-                        Image(systemName: "square.stack.3d.up")
-                            .foregroundColor(.accentColor)
-                            .help("Multiple formats available")
-                    }
-                }
-            }
-
-            TableColumn("Formats") { plugin in
-                HStack(spacing: 4) {
-                    ForEach(Array(plugin.formats), id: \.self) { format in
-                        Text(format.rawValue + " " + format.icon)
-                            .font(.caption)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(Color.accentColor.opacity(0.1))
-                            .foregroundColor(.accentColor)
-                            .cornerRadius(4)
-                    }
-                }
-            }
-
-            TableColumn("Manufacturer") { plugin in
-                Text(plugin.manufacturer ?? "Unknown")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            TableColumn("Version") { plugin in
-                Text(plugin.version ?? "N/A")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            TableColumn("Size") { plugin in
+        Table(displayPlugins, selection: $selectedPluginIDs, sortOrder: $sortOrder) {
+            TableColumn("Name", value: \.name)
+            TableColumn("Manufacturer", value: \.manufacturerForSorting)
+            TableColumn("Version", value: \.versionForSorting)
+            TableColumn("Size", value: \.sizeForSorting) { plugin in
                 Text(plugin.formattedSize)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
-
-            TableColumn("Location") { plugin in
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(plugin.paths.prefix(2), id: \.self) { path in
-                        Text(path.path)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                    if plugin.paths.count > 2 {
-                        Text("+ \(plugin.paths.count - 2) more")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
         }
         .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .onChange(of: sortOrder) { newValue in
+            applySort(from: newValue)
+        }
+        .onChange(of: selectedPluginIDs) { newValue in
+            if !newValue.isEmpty {
+                showingDetailSheet = true
+            }
+        }
+    }
+
+    private func applySort(from descriptors: [KeyPathComparator<Plugin>]) {
+        guard let descriptor = descriptors.first else { return }
+
+        displayPlugins.sort { p1, p2 in
+            let ascending = descriptor.order == .forward
+
+            switch descriptor.keyPath {
+            case \.name:
+                let v1 = p1.name
+                let v2 = p2.name
+                return ascending ? v1 < v2 : v1 > v2
+
+            case \.manufacturerForSorting:
+                let v1 = p1.manufacturerForSorting
+                let v2 = p2.manufacturerForSorting
+                return ascending ? v1 < v2 : v1 > v2
+
+            case \.versionForSorting:
+                let v1 = p1.versionForSorting
+                let v2 = p2.versionForSorting
+                return ascending ? v1 < v2 : v1 > v2
+
+            case \.sizeForSorting:
+                let v1 = p1.sizeForSorting
+                let v2 = p2.sizeForSorting
+                return ascending ? v1 < v2 : v1 > v2
+
+            default:
+                return false
+            }
+        }
     }
 
     var emptyView: some View {
@@ -178,8 +157,6 @@ struct Checkbox: View {
 
 struct FilterBar: View {
     @Binding var selectedFormat: PluginFormat?
-    @Binding var sortOption: PluginListView.SortOption
-    @Binding var sortAscending: Bool
     @Binding var searchText: String
     var onSelectAll: () -> Void
     var onDeselectAll: () -> Void
@@ -251,26 +228,151 @@ struct FilterBar: View {
                 .background(Color(nsColor: .controlBackgroundColor))
                 .cornerRadius(6)
             }
-
-            // Sort Options
-            Picker("Sort", selection: $sortOption) {
-                ForEach(PluginListView.SortOption.allCases, id: \.self) { option in
-                    Text(option.rawValue).tag(option)
-                }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-
-            Button(action: {
-                sortAscending.toggle()
-            }) {
-                Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
-            }
-            .help("Sort order")
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+struct PluginDetailSheet: View {
+    let plugin: Plugin
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(plugin.name)
+                        .font(.title)
+                        .fontWeight(.bold)
+
+                    HStack(spacing: 8) {
+                        ForEach(Array(plugin.formats), id: \.self) { format in
+                            Text(format.rawValue + " " + format.icon)
+                                .font(.caption)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.accentColor.opacity(0.1))
+                                .foregroundColor(.accentColor)
+                                .cornerRadius(6)
+                        }
+
+                        if let manufacturer = plugin.manufacturer {
+                            Text("•")
+                                .foregroundColor(.secondary)
+                            Text(manufacturer)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        if let version = plugin.version {
+                            Text("•")
+                                .foregroundColor(.secondary)
+                            Text(version)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                Button("Done") {
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+            .background(Color(nsColor: .controlBackgroundColor))
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Size info
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Total Size")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Text(plugin.formattedSize)
+                                .font(.title3)
+                                .fontWeight(.semibold)
+                        }
+
+                        Spacer()
+
+                        if plugin.hasMultipleFormats {
+                            HStack(spacing: 4) {
+                                Image(systemName: "square.stack.3d.up")
+                                Text("Multi-format plugin")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .padding()
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .cornerRadius(8)
+
+                    // All locations
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("All Locations (\(plugin.paths.count))")
+                            .font(.headline)
+                            .padding(.horizontal, 20)
+
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(plugin.paths.enumerated()), id: \.offset) { index, path in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text("\(index + 1).")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                            .frame(width: 30, alignment: .trailing)
+
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(path.path)
+                                                .font(.body)
+                                                .textSelection(.enabled)
+
+                                            if let attrs = try? FileManager.default.attributesOfItem(atPath: path.path) {
+                                                let size = (attrs[.size] as? Int64) ?? 0
+                                                let type = (attrs[.type] as? FileAttributeType) ?? .typeUnknown
+
+                                                HStack(spacing: 8) {
+                                                    Text(type == .typeDirectory ? "📁" : "📄")
+                                                        .font(.caption2)
+                                                    Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                                                        .font(.caption2)
+                                                        .foregroundColor(.secondary)
+
+                                                    if type == .typeDirectory {
+                                                        if let contents = try? FileManager.default.contentsOfDirectory(atPath: path.path) {
+                                                            Text("(\(contents.count) items)")
+                                                                .font(.caption2)
+                                                                .foregroundColor(.secondary)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .padding(.vertical, 8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                    Divider().padding(.leading, 40)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                    }
+                }
+                .padding(20)
+            }
+        }
+        .frame(width: 700, height: 500)
     }
 }
 
